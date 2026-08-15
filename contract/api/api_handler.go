@@ -8,5 +8,5 @@ type IApiHandle interface {
 	Middleware(middlewares ...IMiddleware) IApiHandle
 	Group(relativePath string, middlewares ...IMiddleware) IApiHandle
 	Engine() *gin.Engine
-	Listen()
+	Listen(onShutdown ...func())
 }
