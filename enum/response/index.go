@@ -11,6 +11,7 @@ const (
 	TokenInvalid     Value = 40003 // 无效token
 	AccessDenied     Value = 40004 // 禁止访问
 	NoDataPermission Value = 40005 // 无数据处理权限
+	RateLimit        Value = 40006 // 请求过于频繁
 	Illegal          Value = 50000 // 非法请求
 	Panic            Value = 50001 // 服务器内部错误
 )
@@ -24,6 +25,7 @@ var CodeMap = map[Value]string{
 	TokenInvalid:     "token失效",
 	AccessDenied:     "无权访问",
 	NoDataPermission: "无权处理",
+	RateLimit:        "请求过于频繁",
 	Illegal:          "非法请求",
 	Panic:            "程序异常",
 }
