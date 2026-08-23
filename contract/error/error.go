@@ -1,6 +1,6 @@
 package error
 
-import "github.com/hecc-blot/hecc-blot-core/enum/response"
+import "github.com/hecc-blot/core/enum/response"
 
 type IError interface {
 	error

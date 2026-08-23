@@ -5,7 +5,7 @@ Hecc-Blot 契约 SDK：接口契约 / 实体 / 枚举 / 工具，各模块与业
 ## 安装
 
 ```bash
-go get github.com/hecc-blot/hecc-blot-core
+go get github.com/hecc-blot/core
 ```
 
 ## 说明

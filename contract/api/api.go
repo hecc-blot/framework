@@ -1,7 +1,7 @@
 package api
 
 import (
-	coreError "github.com/hecc-blot/hecc-blot-core/contract/error"
+	coreError "github.com/hecc-blot/core/contract/error"
 
 	"github.com/gin-gonic/gin"
 )

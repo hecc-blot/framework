@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	entityApi "github.com/hecc-blot/hecc-blot-core/entity/api"
+	entityApi "github.com/hecc-blot/core/entity/api"
 	"github.com/go-playground/validator/v10"
 	"github.com/stretchr/testify/assert"
 )

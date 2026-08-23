@@ -3,7 +3,7 @@ package api
 import (
 	"context"
 
-	coreError "github.com/hecc-blot/hecc-blot-core/contract/error"
+	coreError "github.com/hecc-blot/core/contract/error"
 )
 
 type IResponse interface {
