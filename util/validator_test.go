@@ -4,9 +4,10 @@ import (
 	"errors"
 	"testing"
 
-	entityApi "github.com/hecc-blot/core/entity/api"
 	"github.com/go-playground/validator/v10"
 	"github.com/stretchr/testify/assert"
+
+	entityApi "github.com/hecc-blot/framework/entity/api"
 )
 
 // mockValidator 实现 IValidator，用于返回自定义校验消息。

@@ -1,4 +1,4 @@
-module github.com/hecc-blot/core
+module github.com/hecc-blot/framework
 
 go 1.26.1
 
@@ -7,6 +7,8 @@ require (
 	github.com/go-playground/validator/v10 v10.30.2
 	github.com/stretchr/testify v1.11.1
 )
+
+require go.uber.org/multierr v1.10.0 // indirect
 
 require (
 	github.com/bytedance/gopkg v0.1.3 // indirect
@@ -33,11 +35,13 @@ require (
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	github.com/ugorji/go/codec v1.3.1 // indirect
 	go.mongodb.org/mongo-driver/v2 v2.5.0 // indirect
+	go.uber.org/zap v1.28.0
 	golang.org/x/arch v0.22.0 // indirect
 	golang.org/x/crypto v0.49.0 // indirect
 	golang.org/x/net v0.51.0 // indirect
 	golang.org/x/sys v0.42.0 // indirect
 	golang.org/x/text v0.35.0 // indirect
 	google.golang.org/protobuf v1.36.10 // indirect
+	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

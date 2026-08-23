@@ -3,7 +3,7 @@ package util
 import (
 	"errors"
 
-	"github.com/hecc-blot/core/contract/api"
+	"github.com/hecc-blot/framework/contract/api"
 
 	"github.com/go-playground/validator/v10"
 )
