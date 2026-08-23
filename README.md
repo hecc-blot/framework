@@ -1,11 +1,11 @@
-# hecc-blot-core
+# hecc-blot-framework
 
-Hecc-Blot 契约 SDK：接口契约 / 实体 / 枚举 / 工具，各模块与业务方的公共依赖层
+Hecc-Blot 框架内核：接口契约 / IOC 容器 / HTTP 内核 / 统一错误 / 本地日志，各模块与业务方的公共依赖层
 
 ## 安装
 
 ```bash
-go get github.com/hecc-blot/core
+go get github.com/hecc-blot/framework
 ```
 
 ## 说明
