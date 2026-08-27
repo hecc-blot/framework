@@ -354,16 +354,14 @@ return util.NewCursor(list, pageSize, func(item *AccountModel) any {
 
 ---
 
-## 本地日志
+## 本地日志（已下沉至 core）
 
-基于 Zap + lumberjack，日志文件按级别分文件滚动输出。
-
-### 初始化
+本地日志（Zap + lumberjack 文件滚动）已随 `ILog` 契约一并下沉至 [core 模块](https://github.com/hecc-blot/core)，framework 不再内置日志。使用方式：
 
 ```go
 import (
-    logContract "github.com/hecc-blot/framework/contract/log"
-    log "github.com/hecc-blot/framework/service/log"
+    logContract "github.com/hecc-blot/core/contract/log"
+    log "github.com/hecc-blot/core/service/log"
 )
 
 logSvc, err := log.NewLogger(&config.Log.Local)
@@ -373,65 +371,13 @@ if err != nil {
 container.Set(new(logContract.ILog), logSvc)
 ```
 
-> SLS（阿里云日志服务）由 [log-sls 模块](https://github.com/hecc-blot/log-sls) 提供，二者通过 `ILog` 契约二选一。
-
-### 配置
-
-```yaml
-log:
-  local:
-    enable: true
-    root_dir: runtime/logs
-    show_line: true        # 是否输出 caller 行号
-    max_size: 100          # 单文件最大 100MB
-    max_backups: 30        # 最多保留 30 个旧文件
-    max_age: 7             # 日志保留 7 天
-    compress: true         # 压缩旧文件
-```
-
-### 日志级别与文件
-
-| 文件 | 级别 | 说明 |
-|------|------|------|
-| `debug.log` | Debug | 调试信息 |
-| `info.log` | Info | 一般信息 |
-| `warn.log` | Warn | 警告信息 |
-| `error.log` | Error | 错误信息（含 stacktrace） |
-| `panic.log` | Panic | 恐慌信息（含 stacktrace） |
-
-### 使用
-
-```go
-a.LogSvc.Debug(ctx, "processing request", "user_id", 123)
-a.LogSvc.Info(ctx, "user login success", "ip", c.ClientIP())
-a.LogSvc.Error(ctx, "database connection failed", zap.Error(err))
-
-// fields 支持 zapcore.Field 类型
-a.LogSvc.Info(ctx, "order created",
-    zap.String("order_id", orderID),
-    zap.Int("amount", 100),
-)
-```
-
-### TraceId 自动关联
-
-框架从 Context 自动提取 TraceId，日志输出自动包含 `traceId` 和 `caller` 字段：
-
-```json
-{
-    "level": "info",
-    "msg": "user login",
-    "traceId": "4bf92f3577b34da6a3ce929d0e0e4736",
-    "caller": "example/example.go:209",
-    "user_id": 123
-}
-```
+> 日志配置类型见 `core/config/log`（`LocalConfig`/`SlsConfig`），配置项、级别文件、TraceId 自动关联等详见 [core README](https://github.com/hecc-blot/core)。SLS 后端由 [log-sls 模块](https://github.com/hecc-blot/log-sls) 提供，二者通过 `ILog` 契约二选一。
 
 ---
 
 ## 配置
 
-框架自身的配置为 `server`（HTTP 内核）与 `log.local`（本地日志），类型见 `framework/config/http` 与 `framework/config/log`。
+框架自身的配置为 `server`（HTTP 内核），类型见 `framework/config/http`。
 
 ### server
 
