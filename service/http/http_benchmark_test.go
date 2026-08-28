@@ -20,7 +20,7 @@ func BenchmarkApiRequest(b *testing.B) {
 		&serverConfig.Config{Env: envEnum.TestMode},
 		NewResponseSvc(),
 		container,
-	)
+	).(*ApiHandle)
 	handle.Get("/hello", &injectApi{})
 
 	req := httptest.NewRequest(http.MethodGet, "/hello?name=bench", nil)

@@ -22,7 +22,7 @@ func TestResponseSvcRegular(t *testing.T) {
 		w := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(w)
 
-		svc.Regular(c, "hello", nil)
+		svc.Regular(NewContext(c), "hello", nil)
 
 		assert.Equal(t, http.StatusOK, w.Code)
 		var resp ResponseSvc
@@ -36,7 +36,7 @@ func TestResponseSvcRegular(t *testing.T) {
 		w := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(w)
 
-		svc.Regular(c, "original", errorSvc.NewError(response.Fail, errors.New("db error")))
+		svc.Regular(NewContext(c), "original", errorSvc.NewError(response.Fail, errors.New("db error")))
 
 		assert.Equal(t, http.StatusOK, w.Code)
 		var resp ResponseSvc

@@ -43,11 +43,7 @@ func (f *ApiHandle) Engine() *gin.Engine {
 func (f *ApiHandle) Middleware(middlewares ...iCoreApi.IMiddleware) iCoreApi.IApiHandle {
 	for _, iMiddleware := range middlewares {
 		f.container.Inject(iMiddleware)
-
-		middlewareValue := iMiddleware.Middleware()
-		if middlewareValue != nil && reflect.TypeOf(middlewareValue).Kind() == reflect.Func {
-			f.group.Use(middlewareValue.(func(*gin.Context)))
-		}
+		f.group.Use(AdaptMiddleware(iMiddleware.Middleware()))
 	}
 
 	return f
@@ -72,6 +68,12 @@ func (f *ApiHandle) Get(apiPath string, apiInstance any) {
 
 func (f *ApiHandle) Post(apiPath string, apiInstance any) {
 	f.registerAPI(apiPath, apiInstance, http.MethodPost)
+}
+
+// Handle 注册原生 http.Handler（如 Prometheus 采集端点、SSE 流），
+// 不经过 IApi 的参数绑定与响应包装，仅复用框架的中间件/分组。
+func (f *ApiHandle) Handle(method, path string, handler http.Handler) {
+	f.group.Handle(method, path, gin.WrapH(handler))
 }
 
 func (f *ApiHandle) Listen(onShutdown ...func()) {
@@ -141,12 +143,13 @@ func (f *ApiHandle) registerAPI(apiPath string, apiInstance any, method string) 
 
 			// 自动绑定参数，并进行校验
 			if err := c.ShouldBind(newInstance); err != nil {
-				f.responseSvc.Regular(c, nil, coreError.New(response.ValidateError, util.GetErrorMsg(api, err)))
+				f.responseSvc.Regular(NewContext(c), nil, coreError.New(response.ValidateError, util.GetErrorMsg(api, err)))
 				return
 			}
 
-			resp, err := api.Call(c)
-			f.responseSvc.Regular(c, resp, err)
+			ctx := NewContext(c)
+			resp, err := api.Call(ctx)
+			f.responseSvc.Regular(ctx, resp, err)
 		}
 
 		switch method {

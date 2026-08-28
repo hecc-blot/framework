@@ -1,15 +1,12 @@
 package service
 
 import (
-	"context"
 	"net/http"
 	"sync"
 
 	"github.com/hecc-blot/framework/contract/api"
 	coreError "github.com/hecc-blot/framework/contract/error"
 	"github.com/hecc-blot/framework/enum/response"
-
-	"github.com/gin-gonic/gin"
 )
 
 type ResponseSvc struct {
@@ -22,8 +19,7 @@ var responsePool = sync.Pool{
 	New: func() any { return &ResponseSvc{} },
 }
 
-func (r *ResponseSvc) Regular(ctx context.Context, data any, err coreError.IError) {
-	g := ctx.(*gin.Context)
+func (r *ResponseSvc) Regular(ctx api.IContext, data any, err coreError.IError) {
 	code := response.Success
 	if err != nil {
 		code = err.GetCode()
@@ -37,7 +33,7 @@ func (r *ResponseSvc) Regular(ctx context.Context, data any, err coreError.IErro
 	resp.Message = response.CodeMap[code]
 	resp.Data = data
 
-	g.JSON(http.StatusOK, resp)
+	ctx.JSON(http.StatusOK, resp)
 }
 
 func NewResponseSvc() api.IResponse {

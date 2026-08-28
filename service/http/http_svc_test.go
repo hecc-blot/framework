@@ -15,7 +15,6 @@ import (
 	"github.com/hecc-blot/framework/enum/response"
 	iocSvc "github.com/hecc-blot/framework/service/ioc"
 
-	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -35,7 +34,7 @@ type echoApi struct {
 	Name string `form:"name" binding:"required"`
 }
 
-func (a *echoApi) Call(ctx *gin.Context) (any, coreError.IError) {
+func (a *echoApi) Call(ctx iCoreApi.IContext) (any, coreError.IError) {
 	return a.Name, nil
 }
 
@@ -45,31 +44,31 @@ type injectApi struct {
 	Name    string  `form:"name"`
 }
 
-func (a *injectApi) Call(ctx *gin.Context) (any, coreError.IError) {
+func (a *injectApi) Call(ctx iCoreApi.IContext) (any, coreError.IError) {
 	return a.Greeter.Greet(a.Name), nil
 }
 
 type headerMiddleware struct{}
 
-func (m *headerMiddleware) Middleware() any {
-	return func(c *gin.Context) {
-		c.Header("X-Test-Middleware", "hit")
-		c.Next()
+func (m *headerMiddleware) Middleware() iCoreApi.MiddlewareFunc {
+	return func(ctx iCoreApi.IContext) {
+		ctx.Header("X-Test-Middleware", "hit")
+		ctx.Next()
 	}
 }
 
 // ============================ 工具函数 ============================
 
-func newTestHandle(t *testing.T, container ioc.IContainer) iCoreApi.IApiHandle {
+func newTestHandle(t *testing.T, container ioc.IContainer) *ApiHandle {
 	t.Helper()
 	return NewApiSvc(
 		&serverConfig.Config{Env: envEnum.TestMode},
 		NewResponseSvc(),
 		container,
-	)
+	).(*ApiHandle)
 }
 
-func doRequest(t *testing.T, h iCoreApi.IApiHandle, method, path, body string) (*httptest.ResponseRecorder, *ResponseSvc) {
+func doRequest(t *testing.T, h *ApiHandle, method, path, body string) (*httptest.ResponseRecorder, *ResponseSvc) {
 	t.Helper()
 	w := httptest.NewRecorder()
 	var reader *strings.Reader

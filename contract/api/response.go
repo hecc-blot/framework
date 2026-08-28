@@ -1,11 +1,9 @@
 package api
 
 import (
-	"context"
-
 	coreError "github.com/hecc-blot/framework/contract/error"
 )
 
 type IResponse interface {
-	Regular(ctx context.Context, data interface{}, err coreError.IError)
+	Regular(ctx IContext, data interface{}, err coreError.IError)
 }
