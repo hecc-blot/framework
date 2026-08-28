@@ -371,7 +371,7 @@ if err != nil {
 container.Set(new(logContract.ILog), logSvc)
 ```
 
-> 日志配置类型见 `core/config/log`（`LocalConfig`/`SlsConfig`），配置项、级别文件、TraceId 自动关联等详见 [core README](https://github.com/hecc-blot/core)。SLS 后端由 [log-sls 模块](https://github.com/hecc-blot/log-sls) 提供，二者通过 `ILog` 契约二选一。
+> 本地日志配置类型见 `core/config/log`（`LocalConfig`），配置项、级别文件、TraceId 自动关联等详见 [core README](https://github.com/hecc-blot/core)。SLS 后端由 [log-sls 模块](https://github.com/hecc-blot/log-sls) 提供（`SlsConfig` 见其 `config` 包），二者通过 `ILog` 契约二选一。
 
 ---
 
