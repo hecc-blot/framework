@@ -430,4 +430,4 @@ container.Set(new(logContract.ILog), &LogrusLogSvc{logger: logrus.New()})
 | [ratelimit](https://github.com/hecc-blot/ratelimit) | 请求限流 |
 | [log-sls](https://github.com/hecc-blot/log-sls) | 阿里云 SLS 日志 |
 
-完整组装示例与快速开始见 [guide](https://github.com/hecc-blot/guide)。
+框架总览、模块列表与快速开始见 [Hecc-Blot 组织主页](https://github.com/hecc-blot)。
