@@ -1,6 +1,14 @@
 # hecc-blot-framework
 
-Hecc-Blot 框架内核：接口契约 / HTTP 内核（路由 + 中间件 + 参数校验 + 统一响应）/ 统一错误 / 分页工具。它是所有业务方与其它模块的公共依赖层。
+框架内核：HTTP 内核（路由 + 中间件 + 参数校验 + 统一响应）、统一错误、分页工具。它是所有业务方与其它模块的公共依赖层。
+
+- [安装](#安装)
+- [快速开始](#快速开始)
+- [接口定义](#接口定义)
+- [使用](#使用)
+- [配置](#配置)
+- [语义与约定](#语义与约定)
+- [相关模块](#相关模块)
 
 ## 安装
 
@@ -8,390 +16,319 @@ Hecc-Blot 框架内核：接口契约 / HTTP 内核（路由 + 中间件 + 参�
 go get github.com/hecc-blot/framework
 ```
 
-## 职责
-
-| 包 | 说明 |
-|----|------|
-| `contract/` | 接口契约：`ILog`、`IResponse`、`IApi`、`IApiHandle`、`IMiddleware`、`IError` 等（`IContainer` 见 `core`） |
-| `service/http` | HTTP 内核：路由注册、参数自动校验、返回值统一包装 |
-| `service/error` | 统一错误构造：`NewError` / `New` / `NewErrorf` / `Newf` |
-| `service/log` | 本地日志：Zap + lumberjack 文件滚动 |
-| `enum/response` | 响应码与中文映射 |
-| `entity/api` | API 实体（`Messages` 校验消息映射等） |
-| `util/` | 工具：分页 `Paginator` / `Cursor`、错误消息 `GetErrorMsg` 等 |
-
----
-
-## IOC 容器
-
-> **2026-09-12 起 IOC 容器已下沉至 `core`**：`core/contract/ioc`（`IContainer` 契约）、`core/service/ioc`（默认反射实现）、`core/mocks/ioc`（mock）。完整用法与实现说明见 [core 的 README](https://github.com/hecc-blot/core)。
-
-框架的 `ApiHandle`、`sse` 的 `SseHandle`、`mq` 的 `ConsumerHandle` 都依赖 `IContainer` 契约而非具体实现，业务方可换成自己的容器。
-
-```go
-import ioc "github.com/hecc-blot/core/service/ioc"
-
-container := ioc.New()
-
-// 初始化阶段注册（单线程，先注册后启动）
-container.Set(new(logContract.ILog), logSvc)
-container.SetWithName(new(logContract.ILog), "remote", remoteLog) // 同接口多实现用命名注册
-
-// 运行阶段注入：带 inject:"" 的字段才会被注入，且必须放在最前面
-type AddApi struct {
-    DbFactory dbContract.IDbFactory `inject:""`
-    LogSvc    logContract.ILog      `inject:""`
-    AddRequest                      // 请求参数放在最后
-}
-```
-
-**并发约定（最高级约束）**：`Container` 内部 map 不加锁——`Set` / `SetWithName` **仅允许在启动初始化阶段**调用；初始化完成后容器进入只读，`Get` / `Inject` 可安全并发调用；**运行时禁止再 `Set`**。
-
----
-
-## 路由与中间件
-
-HTTP 内核基于 Gin，提供路由注册、中间件链、参数自动校验与返回值统一包装。
-
-### 接口定义
-
-```go
-type IApiHandle interface {
-    Get(apiPath string, api interface{})
-    Post(apiPath string, api interface{})
-    Middleware(middlewares ...IMiddleware) IApiHandle
-    Group(relativePath string, middlewares ...IMiddleware) IApiHandle
-    Listen(clearUps ...func())
-    Engine() *gin.Engine
-}
-
-type IApi interface {
-    Call(ctx *gin.Context) (interface{}, error.IError)
-}
-
-type IMiddleware interface {
-    Middleware() interface{}
-}
-```
-
-### 创建处理器并注册路由
+## 快速开始
 
 ```go
 import (
-    iCoreApi "github.com/hecc-blot/framework/contract/api"
-    httpSvc "github.com/hecc-blot/framework/service/http"
-    ioc "github.com/hecc-blot/core/service/ioc"
+	iCoreApi "github.com/hecc-blot/framework/contract/api"
+	httpSvc "github.com/hecc-blot/framework/service/http"
 )
 
-responseSvc := httpSvc.NewResponseSvc()
-apiHandle := httpSvc.NewApiSvc(&config.Server, responseSvc, container)
+func main() {
+	// ... 前面的组装（日志 / trace / db / cache / container.Set）见下面「前置条件」
 
-func register(apiHandle iCoreApi.IApiHandle) {
-    apiHandle.Middleware(&TokenMiddleware{})
+	responseSvc := httpSvc.NewResponseSvc()
+	apiHandle := httpSvc.NewApiSvc(&config.Server, responseSvc, container)
 
-    apiHandle.Post("account/add", &AddApi{})
-    apiHandle.Get("account/list", &ListApi{})
+	// trace 中间件决定 traceId 能否进入日志与下游调用；不注册则日志里没有 traceId
+	apiHandle.Middleware(trace.NewHttpMiddleware(traceSvc))
 
-    // 分组中间件
-    apiGroup := apiHandle.Group("admin", &TokenMiddleware{})
-    apiGroup.Get("account/page", &PageListApi{})
+	apiHandle.Post("account/add", &AddAccountApi{})
+	apiHandle.Get("account/list", &ListAccountApi{})
+
+	apiHandle.Listen() // 阻塞，收到 SIGINT/SIGTERM 后优雅停机
 }
 ```
+
+**前置条件**：
+
+- `container` 必须由 `ioc.New()`（`github.com/hecc-blot/core/service/ioc`）创建，且**依赖已全部 `Set` 完毕**——注册路由时会对 API 结构体 `Inject`，依赖未注册直接 panic。
+- `NewApiSvc` 在 `container` 为 nil 或 `config.Env` 非法时 panic。
+- 完整的应用组装顺序（日志 → trace → db/cache → 容器 → 路由 → Listen）见[组织主页](https://github.com/hecc-blot)。
+
+## 接口定义
+
+```go
+import (
+	iCoreApi "github.com/hecc-blot/framework/contract/api"
+	coreError "github.com/hecc-blot/framework/contract/error"
+)
+
+type IApiHandle interface {
+	Get(apiPath string, api interface{})
+	Post(apiPath string, api interface{})
+	Middleware(middlewares ...IMiddleware) IApiHandle
+	Group(relativePath string, middlewares ...IMiddleware) IApiHandle
+	// Handle 注册原生 http.Handler（如 Prometheus 采集端点、SSE 流），
+	// 不经过参数绑定与响应包装；中间件/分组语义同 Get/Post。
+	Handle(method, path string, handler http.Handler)
+	// Listen 阻塞运行；收到 SIGINT/SIGTERM 后先依次执行 onShutdown 钩子，
+	// 再以 5s 超时优雅关闭 HTTP 服务。
+	Listen(onShutdown ...func())
+}
+
+type IApi interface {
+	Call(ctx IContext) (interface{}, coreError.IError)
+}
+
+type MiddlewareFunc func(ctx IContext)
+
+type IMiddleware interface {
+	Middleware() MiddlewareFunc
+}
+
+type IResponse interface {
+	Regular(ctx IContext, data interface{}, err coreError.IError)
+}
+
+type IValidator interface {
+	GetMessages() apiEntity.Messages
+}
+```
+
+> `IApiHandle` 契约里**没有** `Engine()`。想拿底层 `*gin.Engine` 只能对具体类型 `*httpSvc.ApiHandle` 做断言，属于不受支持的用法。
+
+### IContext
+
+框架自有的请求上下文，屏蔽具体 HTTP 内核（当前为 gin）。业务代码只依赖它，不 import gin。
+
+```go
+type IContext interface {
+	context.Context
+
+	// 取参
+	Param(key string) string     // 路径参数，如 /account/:id 中的 id
+	Query(key string) string     // URL 查询参数
+	GetHeader(key string) string // 请求头
+	ClientIP() string
+	Method() string
+	Path() string                // 请求路径（不含 query）
+	FullPath() string            // 路由模板（如 /account/:id），未匹配返回 ""
+
+	// 请求级键值（跨中间件/API 传递数据）
+	Set(key string, value any)
+	Get(key string) (value any, exists bool)
+
+	// 中间件链路控制
+	Next()
+	Abort()
+
+	// 上下文传播
+	SetRequestContext(ctx context.Context)
+
+	// 响应
+	JSON(code int, obj any)
+	String(code int, format string, values ...any)
+	Header(key, value string)
+	Status() int
+	AbortWithStatus(code int)
+	AbortWithStatusJSON(code int, obj any)
+}
+```
+
+## 使用
+
+### 注册路由
+
+```go
+apiHandle.Post("account/add", &AddAccountApi{})
+apiHandle.Get("account/list", &ListAccountApi{})
+
+// 分组：不同分组用不同中间件
+apiGroup := apiHandle.Group("admin", &demo.TokenMiddleware{})
+apiGroup.Get("account/page", &PageListApi{})
+
+// 原生 handler：绕过参数绑定与响应包装（metrics 端点、SSE 等）
+apiHandle.Handle(http.MethodGet, "/metrics", metricsSvc.Handler())
+```
+
+### 定义 API
+
+```go
+import (
+	iCoreApi "github.com/hecc-blot/framework/contract/api"
+	coreError "github.com/hecc-blot/framework/contract/error"
+	"github.com/hecc-blot/framework/enum/response"
+	errorSvc "github.com/hecc-blot/framework/service/error"
+)
+
+type AddAccountRequest struct {
+	Name   string `form:"name" binding:"required"`
+	Amount int    `form:"amount" binding:"gte=0"`
+}
+
+type AddAccountApi struct {
+	Db     dbContract.IDb   `inject:""`   // 注入字段在前
+	LogSvc logContract.ILog `inject:""`
+	AddAccountRequest                      // 请求参数（匿名嵌入）在后
+}
+
+func (a *AddAccountApi) Call(ctx iCoreApi.IContext) (interface{}, coreError.IError) {
+	if a.Amount > 1000 {
+		return nil, errorSvc.NewError(response.Fail, errors.New("amount too large"))
+	}
+	a.LogSvc.Info(ctx, "add account", zap.String("name", a.Name))
+	return map[string]any{"ok": true}, nil
+}
+```
+
+> **请求参数必须匿名嵌入**（不是具名字段）。参数校验失败时的自定义错误消息依赖方法提升——`GetMessages()` 定义在请求结构体上，只有它被匿名嵌入 API 结构体才能被找到（见[参数校验](#参数校验)）。
 
 ### 定义中间件
 
 ```go
 type TokenMiddleware struct {
-    ResponseSvc iCoreApi.IResponse `inject:""`
+	ResponseSvc iCoreApi.IResponse `inject:""` // 中间件同样走注入
 }
 
-func (t TokenMiddleware) Middleware() interface{} {
-    return func(c *gin.Context) {
-        if c.GetHeader("Authorization") == "" {
-            t.ResponseSvc.Regular(c, nil, errorSvc.NewError(response.TokenInvalid, errors.New("token 为空")))
-            c.Abort()
-            return
-        }
-        c.Next()
-    }
+func (t *TokenMiddleware) Middleware() iCoreApi.MiddlewareFunc {
+	return func(ctx iCoreApi.IContext) {
+		if ctx.GetHeader("Authorization") == "" {
+			ctx.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"code": response.TokenInvalid})
+			return
+		}
+		ctx.Next()
+	}
 }
 ```
+
+中间件在注册时就会被 `Inject`，因此注册必须发生在 `container.Set` 之后。
 
 ### 请求处理流程
 
 ```
-请求 → [中间件链] → 参数绑定+校验 → Call() 业务逻辑 → 响应包装 → 统一响应
+请求 → gin 中间件链 → registerAPI 闭包
+                          ├─ reflect.New(具体类型)      ← 每请求独立实例
+                          ├─ container.Inject(newInstance) ← 重新注入依赖
+                          ├─ ShouldBind(参数绑定 + 校验)
+                          ├─ api.Call(ctx)            ← 业务逻辑
+                          └─ responseSvc.Regular(...)  ← 包装成 {code,message,data}
 ```
 
-每个请求会创建独立 API 实例（避免并发共享写入），再自动 `ShouldBind` 绑定并校验参数，最后调用 `Call()` 并包装返回值。
+### 参数校验
 
-框架在创建 API 处理器时自动注册内置中间件：
+绑定与校验发生在**每个请求**的 handler 里（不是注册时）。失败时返回 `response.ValidateError`（40002），消息按三级优先级取：
 
-| 中间件 | 功能 |
-|--------|------|
-| `gin.Recovery()` | 捕获 handler panic，返回 500 而非进程崩溃 |
-| `bodySizeLimit` | 限制请求体大小，防止大 payload 攻击，默认 10MB |
+1. 自定义消息（`IValidator.GetMessages()`）
+2. `validator` 默认英文消息
+3. 原始 error
 
-> 链路追踪中间件不自动注册，由组装层显式 `trace.NewHttpMiddleware(traceSvc)` 注册（见 [trace 模块](https://github.com/hecc-blot/trace)）。
-> 请求限流由 [ratelimit 模块](https://github.com/hecc-blot/ratelimit) 提供，中间件由业务方实现并注册。
-
----
-
-## 参数校验
-
-基于 `go-playground/validator`，在路由注册时自动绑定请求参数并校验，校验失败返回统一格式错误响应。
+自定义消息：
 
 ```go
-type AddRequest struct {
-    Name     string `json:"name" binding:"required"`
-    Age      int    `json:"age" binding:"required,min=1,max=150"`
-    Email    string `json:"email" binding:"email"`
-    Password string `json:"password" binding:"required,min=6"`
+func (r AddAccountRequest) GetMessages() apiEntity.Messages {
+	return apiEntity.Messages{
+		"Name.required":   "账户名不能为空",
+		"Amount.gte":      "金额不能为负数",
+	}
 }
 ```
 
-常用 tag：
+key 为 `字段名.Tag`。
 
-| Tag | 说明 | 示例 |
-|-----|------|------|
-| `required` | 必填 | `binding:"required"` |
-| `min` / `max` | 数值或字符串长度 | `binding:"min=1,max=150"` |
-| `email` | 邮箱格式 | `binding:"email"` |
-| `url` | URL 格式 | `binding:"url"` |
-| `len` | 精确长度 | `binding:"len=11"` |
-| `eqfield` | 等于另一个字段 | `binding:"eqfield=Password"` |
-| `gt` / `gte` / `lt` / `lte` | 比较 | `binding:"gt=0"` |
-| `oneof` | 枚举值 | `binding:"oneof=male female"` |
+### 统一错误与响应
 
-### 自定义错误信息
-
-实现 `IValidator` 接口，返回 `字段.规则` 对应的中文提示：
+`Call` 返回 `(interface{}, IError)`，成功时 error 传 nil：
 
 ```go
-// framework/contract/api/validator.go
-type IValidator interface {
-    GetMessages() entityApi.Messages
-}
-
-// framework/entity/api/validator.go
-type Messages map[string]string
+// 业务错误
+return nil, errorSvc.NewError(response.Fail, err)
+// 自定义消息
+return nil, errorSvc.Newf(response.Fail, "账户 %s 不存在", id)
 ```
+
+响应统一为 `{code, message, data}`，HTTP 状态码恒为 200，`code` 见下表。
 
 ```go
-func (a AddRequest) GetMessages() entityApi.Messages {
-    return entityApi.Messages{
-        "Name.required":     "用户名不能为空",
-        "Age.required":      "年龄不能为空",
-        "Age.min":           "年龄最小为1",
-        "Password.required": "密码不能为空",
-        "Password.min":      "密码长度至少6位",
-    }
-}
-```
-
-### 错误消息获取
-
-`util.GetErrorMsg()` 按三级优先级获取错误消息：
-
-1. **自定义消息** — 结构体实现了 `IValidator` 且 `GetMessages()` 有对应 key
-2. **validator 默认** — validator 内置英文消息
-3. **原始 error** — 非 validator 错误（空 body、JSON 格式错误等）
-
----
-
-## 统一错误与响应
-
-框架自动将 API 返回值包装为 `{code, message, data}` 统一格式。
-
-```json
-{
-    "code": 10000,
-    "message": "请求成功",
-    "data": {}
-}
-```
-
-### 错误接口
-
-```go
-// framework/contract/error/error.go
 type IError interface {
-    error
-    GetCode() response.Value
-    GetData() interface{}
+	error
+	GetCode() response.Value
+	GetData() interface{}
 }
 ```
 
-```go
-import errorSvc "github.com/hecc-blot/framework/service/error"
-
-err := errorSvc.NewError(response.Fail, errors.New("数据库错误"))
-err = errorSvc.New(response.Fail, "用户名已存在")
-err = errorSvc.NewErrorf(response.Fail, "查询用户 %d 失败", userID)
-err = errorSvc.Newf(response.ValidateError, "字段 %s 不能为空", "name")
-```
-
-### 响应码一览
-
-定义在 `framework/enum/response/index.go`：
-
-| 常量 | 值 | 说明 |
-|------|------|------|
-| `Success` | 10000 | 成功 |
+| 响应码 | 值 | 消息 |
+|--------|-----|------|
+| `Success` | 10000 | 请求成功 |
 | `Processing` | 10001 | 处理中 |
-| `Fail` | 40000 | 失败 |
+| `Fail` | 40000 | 请求失败 |
 | `Busy` | 40001 | 业务繁忙 |
-| `ValidateError` | 40002 | 参数验证失败 |
-| `TokenInvalid` | 40003 | 无效 token |
-| `AccessDenied` | 40004 | 禁止访问 |
-| `NoDataPermission` | 40005 | 无数据处理权限 |
+| `ValidateError` | 40002 | 参数校验失败 |
+| `TokenInvalid` | 40003 | token失效 |
+| `AccessDenied` | 40004 | 无权访问 |
+| `NoDataPermission` | 40005 | 无权处理 |
+| `RateLimit` | 40006 | 请求过于频繁 |
 | `Illegal` | 50000 | 非法请求 |
-| `Panic` | 50001 | 服务器内部错误 |
+| `Panic` | 50001 | 程序异常 |
 
----
-
-## 分页组件
-
-位于 `framework/util/paginator.go`，提供两种分页模式。
-
-### Offset/Limit 分页
+### 分页
 
 ```go
-type PageOpts struct {
-    Page     int
-    PageSize int
-}
+import "github.com/hecc-blot/framework/util"
 
-type Paginator[T any] struct {
-    List     []T   `json:"list"`
-    Page     int   `json:"page"`
-    PageSize int   `json:"pageSize"`
-    Total    int64 `json:"total"`
-}
+// Offset/Limit 分页
+page := util.NewPage[Account](list, pageNum, pageSize, total)
+// → { list, page, pageSize, total }
+
+// 游标分页（适合大偏移量场景）
+cursor := util.NewCursor[Account](list, nextCursor, hasMore)
 ```
 
-```go
-total, _ := db.Count()
-var list []AccountModel
-offset := (opts.Page - 1) * opts.PageSize
-db.Order("id desc").Limit(opts.PageSize).Offset(offset).Find(&list)
+### 替换组件
 
-return util.NewPage(list, total, opts), nil
-```
-
-- `Page` 不传默认 1，`PageSize` 不传默认 10
-- `list` 为空时返回 `[]` 而非 `null`
-
-### 游标分页
+框架面向接口编程，替换组件只需实现对应契约并注册到容器：
 
 ```go
-type CursorOpts struct {
-    Cursor   any
-    PageSize int
-}
-
-type Cursor[T any] struct {
-    List       []T  `json:"list"`
-    NextCursor any  `json:"nextCursor"`
-    HasMore    bool `json:"hasMore"`
-    PageSize   int  `json:"pageSize"`
-}
-```
-
-核心约定：**查询时多取一条（`pageSize + 1`）**，`NewCursor` 自动判断 `hasMore` 并截断：
-
-```go
-var list []AccountModel
-db.Where("id > ?", cursor).Order("id asc").Limit(pageSize + 1).Find(&list)
-
-return util.NewCursor(list, pageSize, func(item *AccountModel) any {
-    return item.ID
-}), nil
-```
-
-| | Offset/Limit | 游标 |
-|--|-------------|------|
-| 入参 | `page` + `pageSize` | `cursor` + `pageSize` |
-| 深翻页性能 | 递减 | 稳定（走索引） |
-| 总页数/跳页 | 支持 | 不支持 |
-| 适用场景 | 管理后台、报表 | 信息流、无限滚动 |
-
----
-
-## 本地日志（已下沉至 core）
-
-本地日志（Zap + lumberjack 文件滚动）已随 `ILog` 契约一并下沉至 [core 模块](https://github.com/hecc-blot/core)，framework 不再内置日志。使用方式：
-
-```go
-import (
-    logContract "github.com/hecc-blot/core/contract/log"
-    log "github.com/hecc-blot/core/service/log"
-)
-
-logSvc, err := log.NewLogger(&config.Log.Local)
-if err != nil {
-    panic(err)
-}
-container.Set(new(logContract.ILog), logSvc)
-```
-
-> 本地日志配置类型见 `core/config/log`（`LocalConfig`），配置项、级别文件、TraceId 自动关联等详见 [core README](https://github.com/hecc-blot/core)。SLS 后端由 [log-sls 模块](https://github.com/hecc-blot/log-sls) 提供（`SlsConfig` 见其 `config` 包），二者通过 `ILog` 契约二选一。
-
----
-
-## 配置
-
-框架自身的配置为 `server`（HTTP 内核），类型见 `framework/config/http`。
-
-### server
-
-| 配置项 | 类型 | 必填 | 说明 |
-|--------|------|------|------|
-| `port` | string | 是 | 服务监听端口 |
-| `env` | string | 是 | 运行环境：`dev` / `test` / `product` |
-| `read_timeout` | int | 否 | 读取超时（秒），0 默认 30 |
-| `write_timeout` | int | 否 | 写入超时（秒），0 默认 30 |
-| `idle_timeout` | int | 否 | 空闲超时（秒），0 默认 60 |
-| `body_size_limit` | int | 否 | 请求体最大字节数，0 默认 10MB |
-
-`env` 映射到 Gin 模式：`dev`→DebugMode、`test`→TestMode、`product`→ReleaseMode。
-
----
-
-## 组件替换
-
-框架采用面向接口编程，替换组件只需实现对应接口并注册到 IOC。
-
-```go
-// 1. 实现 ILog 接口
+// 1. 实现 ILog（来自 core）
 type LogrusLogSvc struct{ logger *logrus.Logger }
 
-func (l LogrusLogSvc) Debug(ctx context.Context, msg string, fields ...interface{}) { l.logger.Debug(msg, fields...) }
-func (l LogrusLogSvc) Info(ctx context.Context, msg string, fields ...interface{})  { l.logger.Info(msg, fields...) }
-func (l LogrusLogSvc) Warn(ctx context.Context, msg string, fields ...interface{})  { l.logger.Warn(msg, fields...) }
-func (l LogrusLogSvc) Error(ctx context.Context, msg string, fields ...interface{}) { l.logger.Error(msg, fields...) }
+func (l *LogrusLogSvc) Info(ctx context.Context, msg string, fields ...interface{}) { ... }
+// ... 其余三个方法
 
-// 2. 注册到 IOC 容器，覆盖默认实现
+// 2. 覆盖默认实现
 container.Set(new(logContract.ILog), &LogrusLogSvc{logger: logrus.New()})
 ```
 
-同样的方式可替换数据库、缓存等任意组件。替换要点：
+要点：必须实现接口的**所有方法**且签名完全匹配；需要资源清理的组件应返回清理函数由调用方 `defer`。
 
-- 必须实现接口的**所有方法**，签名完全匹配
-- 需要资源清理的组件应返回清理函数，`defer` 释放
-- 新增配置字段需更新对应 `config` 结构体
+## 配置
 
----
+```yaml
+server:
+  env: dev               # dev / test / product → gin 的 DebugMode / TestMode / ReleaseMode
+  port: "8080"
+  read_timeout: 30       # 秒，<=0 用默认 30
+  write_timeout: 30      # 秒，<=0 用默认 30
+  idle_timeout: 60       # 秒，<=0 用默认 60
+  body_size_limit: 10485760  # 请求体上限（字节），示例为 10MB
+```
+
+`env` 非法时 `NewApiSvc` 直接 panic。
+
+## 语义与约定
+
+- **容器并发**：`container.Set` 仅允许在启动初始化阶段（单线程）调用；此后容器只读，`Inject`/`Get` 可安全并发。**运行时禁止再 `Set`**。
+- **每请求实例隔离**：`registerAPI` 对每个请求 `reflect.New` 出独立实例再注入，因此 API 结构体**不要在注入字段上保存请求态数据**。
+- **panic 条件**：
+  - `NewApiSvc` 的 `container` 为 nil → panic
+  - `config.Env` 非法 → panic
+  - 依赖未注册 → `Inject` panic
+  - 路由重复注册 → gin panic
+- **`ContextWithFallback` 是 traceId 生效的前提**：`NewApiSvc` 内部设置了 `app.ContextWithFallback = true`。gin 默认不把 `*gin.Context` 的 `Value/Deadline/Done/Err` 委托给 `Request.Context()`，而 `core/enum/trace` 的 `TraceIdKey` 是定义类型（非 string 别名），两者叠加会让 traceId 在**日志、otel span、MQ 消息头**里全部静默丢失，且 `ctx.Done()` 恒为 nil（取消传播失效）。回归测试见 `service/http/http_svc_test.go` 的 `TestContextValueFallback`。
+- **优雅停机**：`Listen` 收到信号后**先跑 `onShutdown` 钩子**（如通知 SSE 客户端断开），再以 5s 超时 `srv.Shutdown`。钩子是同步串行执行的，不要在里面做耗时操作。
 
 ## 相关模块
 
-| 模块 | 职责 | 仓库 |
-|------|------|------|
-| [db](https://github.com/hecc-blot/db) | 数据库（GORM MySQL/PostgreSQL） |
-| [cache](https://github.com/hecc-blot/cache) | 缓存（本地 + Redis） |
-| [trace](https://github.com/hecc-blot/trace) | 链路追踪（OpenTelemetry） |
-| [sse](https://github.com/hecc-blot/sse) | SSE 推送 |
-| [ratelimit](https://github.com/hecc-blot/ratelimit) | 请求限流 |
-| [log-sls](https://github.com/hecc-blot/log-sls) | 阿里云 SLS 日志 |
+| 模块 | 说明 |
+|------|------|
+| [core](https://github.com/hecc-blot/core) | `IContainer`（IOC 容器）与 `ILog`（日志契约）的来源 |
+| [trace](https://github.com/hecc-blot/trace) | `NewHttpMiddleware` 提供请求级 span 与 traceId |
+| [metrics](https://github.com/hecc-blot/metrics) | `NewHttpMiddleware` 提供 QPS/延迟/错误率指标 |
+| [sse](https://github.com/hecc-blot/sse) | 复用 `IApiHandle` 与 `IMiddleware` 做流式推送 |
+| [ratelimit](https://github.com/hecc-blot/ratelimit) | 限流中间件的典型实现 |
+| [db](https://github.com/hecc-blot/db) / [cache](https://github.com/hecc-blot/cache) | 被注入到 API 结构体的数据层 |
+| [log-sls](https://github.com/hecc-blot/log-sls) | `ILog` 的另一种实现 |
 
-框架总览、模块列表与快速开始见 [Hecc-Blot 组织主页](https://github.com/hecc-blot)。
+## 许可证
+
+MIT License
