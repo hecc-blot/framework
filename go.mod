@@ -5,6 +5,7 @@ go 1.26.1
 require (
 	github.com/gin-gonic/gin v1.12.0
 	github.com/go-playground/validator/v10 v10.30.2
+	github.com/hecc-blot/core v0.1.6
 	github.com/stretchr/testify v1.12.1
 )
 

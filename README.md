@@ -1,6 +1,6 @@
 # hecc-blot-framework
 
-Hecc-Blot 框架内核：接口契约 / IOC 容器 / HTTP 内核（路由 + 中间件 + 参数校验 + 统一响应）/ 统一错误 / 本地日志 / 分页工具。它是所有业务方与其它模块的公共依赖层。
+Hecc-Blot 框架内核：接口契约 / HTTP 内核（路由 + 中间件 + 参数校验 + 统一响应）/ 统一错误 / 分页工具。它是所有业务方与其它模块的公共依赖层。
 
 ## 安装
 
@@ -12,8 +12,7 @@ go get github.com/hecc-blot/framework
 
 | 包 | 说明 |
 |----|------|
-| `contract/` | 接口契约：`ILog`、`IResponse`、`IApi`、`IApiHandle`、`IMiddleware`、`IContainer`、`IError` 等 |
-| `service/ioc` | IOC 容器：`Set` / `SetWithName` / `Inject` 反射注入 |
+| `contract/` | 接口契约：`ILog`、`IResponse`、`IApi`、`IApiHandle`、`IMiddleware`、`IError` 等（`IContainer` 见 `core`） |
 | `service/http` | HTTP 内核：路由注册、参数自动校验、返回值统一包装 |
 | `service/error` | 统一错误构造：`NewError` / `New` / `NewErrorf` / `Newf` |
 | `service/log` | 本地日志：Zap + lumberjack 文件滚动 |
@@ -25,63 +24,28 @@ go get github.com/hecc-blot/framework
 
 ## IOC 容器
 
-IOC（控制反转）负责管理所有服务的生命周期与依赖注入：初始化阶段 `Set` 注册实例，运行阶段通过 `inject` tag 自动注入。
+> **2026-09-12 起 IOC 容器已下沉至 `core`**：`core/contract/ioc`（`IContainer` 契约）、`core/service/ioc`（默认反射实现）、`core/mocks/ioc`（mock）。完整用法与实现说明见 [core 的 README](https://github.com/hecc-blot/core)。
+
+框架的 `ApiHandle`、`sse` 的 `SseHandle`、`mq` 的 `ConsumerHandle` 都依赖 `IContainer` 契约而非具体实现，业务方可换成自己的容器。
 
 ```go
-type Container struct {
-    values map[reflect.Type]map[string]reflect.Value
-}
+import ioc "github.com/hecc-blot/core/service/ioc"
 
-func New() *Container
-```
-
-- **外层 Map**：Key 为接口类型（`reflect.Type`）
-- **内层 Map**：Key 为实例名称（区分同接口多个实现），Value 为实例的反射值
-
-### 注册
-
-```go
 container := ioc.New()
 
-// 注册默认实例
+// 初始化阶段注册（单线程，先注册后启动）
 container.Set(new(logContract.ILog), logSvc)
-container.Set(new(dbContract.IDbFactory), dbFactory)
+container.SetWithName(new(logContract.ILog), "remote", remoteLog) // 同接口多实现用命名注册
 
-// 同一接口多个实现时用命名注册
-container.SetWithName(new(logContract.ILog), "local", localLog)
-container.SetWithName(new(logContract.ILog), "remote", remoteLog)
-```
-
-### 注入
-
-```go
+// 运行阶段注入：带 inject:"" 的字段才会被注入，且必须放在最前面
 type AddApi struct {
-    // inject tag 标记需要注入的字段（必须放在请求参数前面）
     DbFactory dbContract.IDbFactory `inject:""`
     LogSvc    logContract.ILog      `inject:""`
-
-    // 命名注入
-    // RemoteLog logContract.ILog `inject:"remote"`
-
-    AddRequest // 请求参数放在最后
+    AddRequest                      // 请求参数放在最后
 }
 ```
 
-### 并发约定（最高级约束）
-
-> ⚠️ **最高级约定**：本约定是整个 IOC 容器使用中优先级最高的约束，违反会导致数据竞争。
-
-`Container` 内部 `values` map **不加锁**，依赖以下约定保证并发安全：
-
-- `Set` / `SetWithName` **仅允许在启动初始化阶段调用**（单线程，先注册后启动）；
-- 初始化完成后容器进入**只读**，此时 `Get` / `Inject` 可安全并发调用；
-- **运行时禁止再 `Set`**。
-
-### 注入规则
-
-1. **字段顺序**：注入字段必须放在结构体最前面，请求参数放在最后（遇到无 `inject` tag 的字段即停止注入）。
-2. **匿名嵌套**：支持匿名嵌套结构体的注入。
-3. **指针类型**：注入字段可以是指针类型。
+**并发约定（最高级约束）**：`Container` 内部 map 不加锁——`Set` / `SetWithName` **仅允许在启动初始化阶段**调用；初始化完成后容器进入只读，`Get` / `Inject` 可安全并发调用；**运行时禁止再 `Set`**。
 
 ---
 
@@ -116,7 +80,7 @@ type IMiddleware interface {
 import (
     iCoreApi "github.com/hecc-blot/framework/contract/api"
     httpSvc "github.com/hecc-blot/framework/service/http"
-    ioc "github.com/hecc-blot/framework/service/ioc"
+    ioc "github.com/hecc-blot/core/service/ioc"
 )
 
 responseSvc := httpSvc.NewResponseSvc()

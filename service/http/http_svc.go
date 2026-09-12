@@ -11,9 +11,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/hecc-blot/core/contract/ioc"
 	serverConfig "github.com/hecc-blot/framework/config/http"
 	iCoreApi "github.com/hecc-blot/framework/contract/api"
-	"github.com/hecc-blot/framework/contract/ioc"
 	envEnum "github.com/hecc-blot/framework/enum/env"
 	"github.com/hecc-blot/framework/enum/response"
 	coreError "github.com/hecc-blot/framework/service/error"

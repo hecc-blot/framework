@@ -7,13 +7,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hecc-blot/core/contract/ioc"
+	iocSvc "github.com/hecc-blot/core/service/ioc"
 	serverConfig "github.com/hecc-blot/framework/config/http"
 	iCoreApi "github.com/hecc-blot/framework/contract/api"
 	coreError "github.com/hecc-blot/framework/contract/error"
-	"github.com/hecc-blot/framework/contract/ioc"
 	envEnum "github.com/hecc-blot/framework/enum/env"
 	"github.com/hecc-blot/framework/enum/response"
-	iocSvc "github.com/hecc-blot/framework/service/ioc"
 
 	"github.com/stretchr/testify/assert"
 )

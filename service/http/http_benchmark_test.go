@@ -5,9 +5,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	iocSvc "github.com/hecc-blot/core/service/ioc"
 	serverConfig "github.com/hecc-blot/framework/config/http"
 	envEnum "github.com/hecc-blot/framework/enum/env"
-	iocSvc "github.com/hecc-blot/framework/service/ioc"
 )
 
 // BenchmarkApiRequest 度量一个请求经过 inject → 参数绑定 → Call → 响应包装的完整开销，
