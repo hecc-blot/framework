@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -8,7 +9,9 @@ import (
 	"testing"
 
 	"github.com/hecc-blot/core/contract/ioc"
+	traceEnum "github.com/hecc-blot/core/enum/trace"
 	iocSvc "github.com/hecc-blot/core/service/ioc"
+	coreUtil "github.com/hecc-blot/core/util"
 	serverConfig "github.com/hecc-blot/framework/config/http"
 	iCoreApi "github.com/hecc-blot/framework/contract/api"
 	coreError "github.com/hecc-blot/framework/contract/error"
@@ -104,6 +107,42 @@ func TestNewApiSvc(t *testing.T) {
 			NewApiSvc(&serverConfig.Config{Env: envEnum.Value("invalid")}, NewResponseSvc(), iocSvc.New())
 		})
 	})
+}
+
+const testTraceId = "4bf92f3577b34da6a3ce929d0e0e4736"
+
+// traceIdApi 返回从 IContext 取到的 traceId，用于验证类型化 key 的透传。
+type traceIdApi struct{}
+
+func (a *traceIdApi) Call(ctx iCoreApi.IContext) (any, coreError.IError) {
+	return coreUtil.ExtractTraceId(ctx), nil
+}
+
+// traceInjectMiddleware 模拟 trace.NewHttpMiddleware：把带 traceId 的 ctx 写回 request。
+type traceInjectMiddleware struct{}
+
+func (m *traceInjectMiddleware) Middleware() iCoreApi.MiddlewareFunc {
+	return func(ctx iCoreApi.IContext) {
+		ctx.SetRequestContext(context.WithValue(context.Background(), traceEnum.TraceIdKey, testTraceId))
+		ctx.Next()
+	}
+}
+
+// TestContextValueFallback IContext 必须能读到写进 Request.Context() 的类型化 key。
+//
+// 回归防护：gin 的 ContextWithFallback 默认为 false，此时 *gin.Context 的
+// Value/Deadline/Done/Err 都不委托给 Request.Context()；而 core/enum/trace 的
+// TraceIdKey 是**定义类型**（`type Value string`，不是 string 别名），也走不到 gin
+// 里 `key.(string)` 那条分支 —— 两者叠加会让 traceId 在业务日志与 otel span 里静默丢失。
+// 若 NewApiSvc 漏开该开关，本用例即失败。
+func TestContextValueFallback(t *testing.T) {
+	handle := newTestHandle(t, iocSvc.New())
+	handle.Middleware(&traceInjectMiddleware{}) // 必须在注册路由之前
+	handle.Get("/trace", &traceIdApi{})
+
+	_, resp := doRequest(t, handle, http.MethodGet, "/trace", "")
+	assert.Equal(t, response.Success, resp.Code)
+	assert.Equal(t, testTraceId, resp.Data)
 }
 
 func TestGetRoute(t *testing.T) {

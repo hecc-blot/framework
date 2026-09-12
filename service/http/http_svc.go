@@ -177,6 +177,12 @@ func NewApiSvc(config *serverConfig.Config, responseSvc iCoreApi.IResponse, cont
 
 	gin.SetMode(mode)
 	app := gin.New()
+	// 开启 gin 的 Context 回退：gin 默认（ContextWithFallback=false）下 *gin.Context 的
+	// Value/Deadline/Done/Err 不会委托给 Request.Context()，于是把 IContext 当
+	// context.Context 往下传时取不到「类型化 key」——典型后果是 core/enum/trace 的
+	// TraceIdKey 在业务日志与 otel span 里全部丢失（traceId 为空、MQ 消息头无 traceparent）。
+	// 开启后这 4 个方法的行为与 Request.Context() 一致。
+	app.ContextWithFallback = true
 	app.Use(gin.Recovery())
 	app.Use(bodySizeLimit(config.BodySizeLimit)) // 10MB
 
