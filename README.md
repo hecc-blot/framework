@@ -62,9 +62,13 @@ type IApiHandle interface {
 	// Handle 注册原生 http.Handler（如 Prometheus 采集端点、SSE 流），
 	// 不经过参数绑定与响应包装；中间件/分组语义同 Get/Post。
 	Handle(method, path string, handler http.Handler)
-	// Listen 阻塞运行；收到 SIGINT/SIGTERM 后先依次执行 onShutdown 钩子，
+	// OnShutdown 注册关闭钩子：收到 SIGINT/SIGTERM 后、http.Server.Shutdown 之前执行。
+	// 长连接模块（sse / 未来的 ws）在**构造时**注册一次，业务无需手工传参。
+	// 钩子须幂等；每个钩子独立 recover，一个 panic 不影响后续钩子与 Shutdown。
+	OnShutdown(fn func())
+	// Listen 阻塞运行；收到 SIGINT/SIGTERM 后先依次执行通过 OnShutdown 注册的钩子，
 	// 再以 5s 超时优雅关闭 HTTP 服务。
-	Listen(onShutdown ...func())
+	Listen()
 }
 
 type IApi interface {
@@ -239,6 +243,12 @@ return nil, errorSvc.Newf(response.Fail, "账户 %s 不存在", id)
 
 响应统一为 `{code, message, data}`，HTTP 状态码恒为 200，`code` 见下表。
 
+**三者的分工是契约：**
+
+- **`code`**：客户端分支的唯一依据（按码判断，不要解析文案）。
+- **`message`**：按码生成的**通用短语**，给机器看 —— 可枚举、可测、客户端可自行本地化。错误纹理见下方「core 码与对外码的映射」。
+- **`data`**：成功时是业务数据；**失败时是给用户看的业务文案**（业务用 `errorSvc.New(code, "用户可见文案")` 传）。走 `errorSvc.From(err)` 的错误不带文案，`data` 为 `null`。
+
 ```go
 type IError interface {
 	error
@@ -249,17 +259,40 @@ type IError interface {
 
 | 响应码 | 值 | 消息 |
 |--------|-----|------|
-| `Success` | 10000 | 请求成功 |
-| `Processing` | 10001 | 处理中 |
-| `Fail` | 40000 | 请求失败 |
-| `Busy` | 40001 | 业务繁忙 |
-| `ValidateError` | 40002 | 参数校验失败 |
-| `TokenInvalid` | 40003 | token失效 |
-| `AccessDenied` | 40004 | 无权访问 |
-| `NoDataPermission` | 40005 | 无权处理 |
-| `RateLimit` | 40006 | 请求过于频繁 |
-| `Illegal` | 50000 | 非法请求 |
-| `Panic` | 50001 | 程序异常 |
+| `Success` | 10000 | success |
+| `Processing` | 10001 | processing |
+| `Fail` | 40000 | request failed |
+| `Busy` | 40001 | server busy |
+| `ValidateError` | 40002 | invalid parameters |
+| `TokenInvalid` | 40003 | invalid token |
+| `AccessDenied` | 40004 | access denied |
+| `NoDataPermission` | 40005 | no permission to process data |
+| `RateLimit` | 40006 | too many requests |
+| `Illegal` | 50000 | illegal request |
+| `Panic` | 50001 | internal server error |
+
+#### core 码与对外码的映射
+
+`response.Value` 是 `core/enum/errorcode.Code` 的**别名** —— framework 段（10000 / 40000 / 50000…）与 core 段（20000–29999）是同一个类型，边界可以直接把 core 码发出去，无需类型转换。
+
+默认**直用（透传）**：`errorSvc.From(err)` 会取 err 链上的 core 码（穿透 `fmt.Errorf` 的 `%w`），原样进入响应。不想让 core 段出现在响应里，就按需注册翻译 —— 逐码、增量，没有"翻译模式"开关，因为对外码表是对客户端的契约，不该随部署配置变化：
+
+```go
+errorSvc.MapCode(errorcode.CodeTimeout, response.Busy) // 此后 20001 对外一律显示 40001
+```
+
+`message` 按三跳回退：`response.CodeMap`（协议码文案）→ `errorcode.Message`（core 段文案）→ `Fail` 的兜底文案（业务自定义码 60000+ 框架无从知道文案，落在这里，不会发出空 message）。
+
+业务侧因此不必再"回忆这个错该返回哪个码"：
+
+```go
+if err := locker.Lock(ctx, key, ttl); err != nil {
+    return nil, errorSvc.From(err) // 带码的 sentinel → 该码；普通错误 → Fail
+}
+```
+
+> `errorSvc.From(nil)` 返回 `nil`，可以放心直写 `return nil, errorSvc.From(err)`。
+> 各 leaf 模块的契约型 sentinel（`lock` / `idempotent` / `circuitbreaker` / `core/util`）正在逐批改为携带 core 码；尚未带码的会落到 `Fail`。
 
 ### 分页
 
@@ -298,7 +331,7 @@ server:
   env: dev               # dev / test / product → gin 的 DebugMode / TestMode / ReleaseMode
   port: "8080"
   read_timeout: 30       # 秒，<=0 用默认 30
-  write_timeout: 30      # 秒，<=0 用默认 30
+  write_timeout: 30      # 秒；-1 = 不设写超时，0 / 未配置 = 默认 30
   idle_timeout: 60       # 秒，<=0 用默认 60
   body_size_limit: 10485760  # 请求体上限（字节），示例为 10MB
 ```
@@ -315,7 +348,9 @@ server:
   - 依赖未注册 → `Inject` panic
   - 路由重复注册 → gin panic
 - **`ContextWithFallback` 是 traceId 生效的前提**：`NewApiSvc` 内部设置了 `app.ContextWithFallback = true`。gin 默认不把 `*gin.Context` 的 `Value/Deadline/Done/Err` 委托给 `Request.Context()`，而 `core/enum/trace` 的 `TraceIdKey` 是定义类型（非 string 别名），两者叠加会让 traceId 在**日志、otel span、MQ 消息头**里全部静默丢失，且 `ctx.Done()` 恒为 nil（取消传播失效）。回归测试见 `service/http/http_svc_test.go` 的 `TestContextValueFallback`。
-- **优雅停机**：`Listen` 收到信号后**先跑 `onShutdown` 钩子**（如通知 SSE 客户端断开），再以 5s 超时 `srv.Shutdown`。钩子是同步串行执行的，不要在里面做耗时操作。
+- **优雅停机**：`Listen` 收到信号后**先跑 `OnShutdown` 注册的钩子**（如通知 SSE 客户端断开），再以 5s 超时 `srv.Shutdown`。钩子同步串行执行，不要在里面做耗时操作；每个钩子独立 recover，一个 panic 不影响后续钩子与 `Shutdown`；钩子须**幂等**（Go 中函数值不可比较，框架无法去重）。
+- **写超时**：`read_timeout` / `idle_timeout` 为 `<= 0`（含未配置）时取默认 30s / 60s；`write_timeout` 特殊 —— **负值表示不设写超时**（约定写 `-1`），`0` / 未配置仍取默认 30s。之所以不用 `0` 表示关闭：配置的零值就是 `0`，分不清"没配"与"配了 0"，用 `0` 当开关等于顺手拿掉慢客户端的兜底。
+- **长连接与写 deadline**：`net/http` 在读完请求头时一次性设下**绝对**写 deadline，`Flush()` 不会顺延 —— 长连接会准时在 `write_timeout` 那一刻静默断流。SSE handler 内部已自行清掉该 deadline（`http.NewResponseController(w).SetWriteDeadline(time.Time{})`），**因此 SSE 不受 `write_timeout` 限制**；若你也写长连接 handler，记得同样处理。
 
 ## 相关模块
 
