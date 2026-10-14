@@ -26,12 +26,34 @@ import (
 )
 
 type ApiHandle struct {
-	config      *serverConfig.Config
-	engine      *gin.Engine
-	group       *gin.RouterGroup
-	responseSvc iCoreApi.IResponse
-	container   ioc.IContainer
-	hooks       *shutdownHooks
+	config    *serverConfig.Config
+	engine    *gin.Engine
+	group     *gin.RouterGroup
+	response  *responseHolder
+	container ioc.IContainer
+	hooks     *shutdownHooks
+}
+
+// responseHolder 承载响应渲染实现（IResponse），由 SetResponseSvc 注入。
+//
+// 用**指针**在 Group 出来的实例间共享，理由与 hooks 相同：值拷贝会让「先建分组、 后在根上注入」的分组永远拿不到实现，注册 API 路由时就会 panic。
+// 加锁是因为注入发生在启动期、读取发生在每个请求上 —— 与 hooks 一样，
+// 宁可付一把无竞争的读写锁，也不留一个数据竞争。
+type responseHolder struct {
+	mu  sync.RWMutex
+	svc iCoreApi.IResponse
+}
+
+func (h *responseHolder) set(svc iCoreApi.IResponse) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.svc = svc
+}
+
+func (h *responseHolder) get() iCoreApi.IResponse {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.svc
 }
 
 // shutdownHooks 关闭钩子集合。
@@ -97,12 +119,12 @@ func (f *ApiHandle) Middleware(middlewares ...iCoreApi.IMiddleware) iCoreApi.IAp
 // Group 创建路由分组，分组内的中间件仅作用于该分组。
 func (f *ApiHandle) Group(relativePath string, middlewares ...iCoreApi.IMiddleware) iCoreApi.IApiHandle {
 	group := &ApiHandle{
-		config:      f.config,
-		engine:      f.engine,
-		group:       f.group.Group(relativePath),
-		responseSvc: f.responseSvc,
-		container:   f.container,
-		hooks:       f.hooks, // 共享同一份钩子：分组上注册的钩子也要能在根实例停机时执行
+		config:    f.config,
+		engine:    f.engine,
+		group:     f.group.Group(relativePath),
+		response:  f.response, // 共享同一份响应实现：分组上注册的 API 路由也要能渲染响应
+		container: f.container,
+		hooks:     f.hooks, // 共享同一份钩子：分组上注册的钩子也要能在根实例停机时执行
 	}
 	group.Middleware(middlewares...)
 	return group
@@ -206,6 +228,14 @@ func (f *ApiHandle) registerAPI(apiPath string, apiInstance any, method string) 
 	f.container.Inject(apiInstance)
 
 	if _, ok := apiInstance.(iCoreApi.IApi); ok {
+		// 没注入响应渲染就不能注册 API 路由。早失败在注册期 ——
+		// 否则要等第一个请求进来才 nil 崩，而且崩在 gin 的 handler 里更难定位。
+		// 纯原生 handler 的内核（WS / SSE / Prometheus 采集端点）本就不需要它。
+		responseSvc := f.response.get()
+		if responseSvc == nil {
+			panic("api: response svc is required to register Get/Post routes; call SetResponseSvc(httpSvc.NewResponseSvc()) first")
+		}
+
 		// 缓存具体类型，避免每个请求都做类型断言
 		apiType := reflect.TypeOf(apiInstance).Elem()
 
@@ -217,13 +247,13 @@ func (f *ApiHandle) registerAPI(apiPath string, apiInstance any, method string) 
 
 			// 自动绑定参数，并进行校验
 			if err := c.ShouldBind(newInstance); err != nil {
-				f.responseSvc.Regular(NewContext(c), nil, coreError.New(response.ValidateError, util.GetErrorMsg(api, err)))
+				responseSvc.Regular(NewContext(c), nil, coreError.New(response.ValidateError, util.GetErrorMsg(api, err)))
 				return
 			}
 
 			ctx := NewContext(c)
 			resp, err := api.Call(ctx)
-			f.responseSvc.Regular(ctx, resp, err)
+			responseSvc.Regular(ctx, resp, err)
 		}
 
 		switch method {
@@ -239,7 +269,12 @@ func (f *ApiHandle) registerAPI(apiPath string, apiInstance any, method string) 
 	}
 }
 
-func NewApiSvc(config *serverConfig.Config, responseSvc iCoreApi.IResponse, container ioc.IContainer) iCoreApi.IApiHandle {
+// NewApiSvc 创建 HTTP 内核。
+//
+// 不再接收响应渲染实现：那只是 API 路由（Get/Post）的需要，用 Handle 挂原生 handler 的
+// 内核（纯 WS / SSE 服务、Prometheus 采集端口）不该被迫构造一个用不上的东西。
+// 注册 Get/Post 之前请先 SetResponseSvc。
+func NewApiSvc(config *serverConfig.Config, container ioc.IContainer) iCoreApi.IApiHandle {
 	mode, ok := mapEnv[config.Env]
 	if !ok {
 		panic(fmt.Sprintf("invalid env config: %s", mode))
@@ -261,15 +296,23 @@ func NewApiSvc(config *serverConfig.Config, responseSvc iCoreApi.IResponse, cont
 	app.Use(bodySizeLimit(config.BodySizeLimit)) // 10MB
 
 	apiHandle := &ApiHandle{
-		config:      config,
-		engine:      app,
-		group:       &app.RouterGroup,
-		responseSvc: responseSvc,
-		container:   container,
-		hooks:       &shutdownHooks{},
+		config:    config,
+		engine:    app,
+		group:     &app.RouterGroup,
+		response:  &responseHolder{},
+		container: container,
+		hooks:     &shutdownHooks{},
 	}
 
 	return apiHandle
+}
+
+// SetResponseSvc 注入 API 响应渲染实现，见 IApiHandle 的说明。
+func (f *ApiHandle) SetResponseSvc(responseSvc iCoreApi.IResponse) {
+	if responseSvc == nil {
+		return
+	}
+	f.response.set(responseSvc)
 }
 
 // bodySizeLimit 限制请求体大小，防止大 payload 攻击

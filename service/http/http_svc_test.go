@@ -64,11 +64,12 @@ func (m *headerMiddleware) Middleware() iCoreApi.MiddlewareFunc {
 
 func newTestHandle(t *testing.T, container ioc.IContainer) *ApiHandle {
 	t.Helper()
-	return NewApiSvc(
+	handle := NewApiSvc(
 		&serverConfig.Config{Env: envEnum.TestMode},
-		NewResponseSvc(),
 		container,
 	).(*ApiHandle)
+	handle.SetResponseSvc(NewResponseSvc())
+	return handle
 }
 
 func doRequest(t *testing.T, h *ApiHandle, method, path, body string) (*httptest.ResponseRecorder, *ResponseSvc) {
@@ -98,14 +99,68 @@ func doRequest(t *testing.T, h *ApiHandle, method, path, body string) (*httptest
 func TestNewApiSvc(t *testing.T) {
 	t.Run("nil 容器 panic", func(t *testing.T) {
 		assert.Panics(t, func() {
-			NewApiSvc(&serverConfig.Config{Env: envEnum.TestMode}, NewResponseSvc(), nil)
+			NewApiSvc(&serverConfig.Config{Env: envEnum.TestMode}, nil)
 		})
 	})
 
 	t.Run("非法环境 panic", func(t *testing.T) {
 		assert.Panics(t, func() {
-			NewApiSvc(&serverConfig.Config{Env: envEnum.Value("invalid")}, NewResponseSvc(), iocSvc.New())
+			NewApiSvc(&serverConfig.Config{Env: envEnum.Value("invalid")}, iocSvc.New())
 		})
+	})
+}
+
+// TestSetResponseSvc：响应渲染实现只服务 Get/Post，因此改为按需注入 ——
+// 纯原生 handler 的内核（WS / SSE / Prometheus 采集端点）不必构造一个用不上的东西。
+func TestSetResponseSvc(t *testing.T) {
+	newHandle := func() *ApiHandle {
+		return NewApiSvc(&serverConfig.Config{Env: envEnum.TestMode}, iocSvc.New()).(*ApiHandle)
+	}
+
+	t.Run("未注入就注册 API 路由，注册期 panic", func(t *testing.T) {
+		assert.Panics(t, func() { newHandle().Get("/echo", &echoApi{}) })
+	})
+
+	t.Run("注入后可注册并正常渲染", func(t *testing.T) {
+		handle := newHandle()
+		handle.SetResponseSvc(NewResponseSvc())
+		handle.Get("/echo", &echoApi{})
+
+		w, resp := doRequest(t, handle, http.MethodGet, "/echo?name=hecc", "")
+		assert.Equal(t, http.StatusOK, w.Code)
+		assert.Equal(t, response.Success, resp.Code)
+		assert.Equal(t, "hecc", resp.Data)
+	})
+
+	t.Run("先建分组、后在根上注入也生效", func(t *testing.T) {
+		// response 在分组间用指针共享，否则这个顺序会让分组永远拿不到实现
+		handle := newHandle()
+		group := handle.Group("admin")
+		handle.SetResponseSvc(NewResponseSvc())
+
+		group.Get("/echo", &echoApi{})
+
+		w, resp := doRequest(t, handle, http.MethodGet, "/admin/echo?name=hecc", "")
+		assert.Equal(t, http.StatusOK, w.Code)
+		assert.Equal(t, response.Success, resp.Code)
+	})
+
+	t.Run("只挂原生 handler 的内核不需要响应实现", func(t *testing.T) {
+		// 纯 WS / SSE 服务的形态：全程不 SetResponseSvc
+		handle := newHandle()
+		handle.Handle(http.MethodGet, "/raw", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusTeapot)
+		}))
+
+		w := httptest.NewRecorder()
+		handle.Engine().ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/raw", nil))
+		assert.Equal(t, http.StatusTeapot, w.Code)
+	})
+
+	t.Run("传 nil 忽略，内核仍视为未注入", func(t *testing.T) {
+		handle := newHandle()
+		handle.SetResponseSvc(nil)
+		assert.Panics(t, func() { handle.Get("/echo", &echoApi{}) })
 	})
 }
 

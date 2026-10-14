@@ -27,8 +27,11 @@ import (
 func main() {
 	// ... 前面的组装（日志 / trace / db / cache / container.Set）见下面「前置条件」
 
-	responseSvc := httpSvc.NewResponseSvc()
-	apiHandle := httpSvc.NewApiSvc(&config.Server, responseSvc, container)
+	apiHandle := httpSvc.NewApiSvc(&config.Server, container)
+
+	// 响应渲染只服务 Get/Post 注册的 API 路由；纯 WS / SSE 服务没有这行也能跑
+	apiHandle.SetResponseSvc(httpSvc.NewResponseSvc())
+
 
 	// trace 中间件决定 traceId 能否进入日志与下游调用；不注册则日志里没有 traceId
 	apiHandle.Middleware(trace.NewHttpMiddleware(traceSvc))
@@ -44,6 +47,7 @@ func main() {
 
 - `container` 必须由 `ioc.New()`（`github.com/hecc-blot/core/service/ioc`）创建，且**依赖已全部 `Set` 完毕**——注册路由时会对 API 结构体 `Inject`，依赖未注册直接 panic。
 - `NewApiSvc` 在 `container` 为 nil 或 `config.Env` 非法时 panic。
+- `SetResponseSvc` **可以完全不调用** —— 那是纯原生 handler 内核（只跑 WS / SSE 服务、Prometheus 采集端点的进程）的形态。但注册 `Get`/`Post` 之前必须先注入，否则**注册期** panic（它只管 API 路由的响应包装，与 `Handle` 无关）。
 - 完整的应用组装顺序（日志 → trace → db/cache → 容器 → 路由 → Listen）见[组织主页](https://github.com/hecc-blot)。
 
 ## 接口定义
@@ -62,8 +66,12 @@ type IApiHandle interface {
 	// Handle 注册原生 http.Handler（如 Prometheus 采集端点、SSE 流），
 	// 不经过参数绑定与响应包装；中间件/分组语义同 Get/Post。
 	Handle(method, path string, handler http.Handler)
+	// SetResponseSvc 注入 API 响应渲染实现：只服务 Get/Post 注册的路由，
+	// 用 Handle 挂原生 handler 的内核（纯 WS / SSE 服务）不必调用。
+	// 未注入就注册 Get/Post 会在注册期 panic；传 nil 忽略。
+	SetResponseSvc(response IResponse)
 	// OnShutdown 注册关闭钩子：收到 SIGINT/SIGTERM 后、http.Server.Shutdown 之前执行。
-	// 长连接模块（sse / 未来的 ws）在**构造时**注册一次，业务无需手工传参。
+	// 长连接模块（sse / ws）在**构造时**注册一次，业务无需手工传参。
 	// 钩子须幂等；每个钩子独立 recover，一个 panic 不影响后续钩子与 Shutdown。
 	OnShutdown(fn func())
 	// Listen 阻塞运行；收到 SIGINT/SIGTERM 后先依次执行通过 OnShutdown 注册的钩子，
@@ -345,12 +353,13 @@ server:
 - **panic 条件**：
   - `NewApiSvc` 的 `container` 为 nil → panic
   - `config.Env` 非法 → panic
+  - 注册 `Get`/`Post` 时未 `SetResponseSvc` → panic（原生 handler 不受影响）
   - 依赖未注册 → `Inject` panic
   - 路由重复注册 → gin panic
 - **`ContextWithFallback` 是 traceId 生效的前提**：`NewApiSvc` 内部设置了 `app.ContextWithFallback = true`。gin 默认不把 `*gin.Context` 的 `Value/Deadline/Done/Err` 委托给 `Request.Context()`，而 `core/enum/trace` 的 `TraceIdKey` 是定义类型（非 string 别名），两者叠加会让 traceId 在**日志、otel span、MQ 消息头**里全部静默丢失，且 `ctx.Done()` 恒为 nil（取消传播失效）。回归测试见 `service/http/http_svc_test.go` 的 `TestContextValueFallback`。
 - **优雅停机**：`Listen` 收到信号后**先跑 `OnShutdown` 注册的钩子**（如通知 SSE 客户端断开），再以 5s 超时 `srv.Shutdown`。钩子同步串行执行，不要在里面做耗时操作；每个钩子独立 recover，一个 panic 不影响后续钩子与 `Shutdown`；钩子须**幂等**（Go 中函数值不可比较，框架无法去重）。
 - **写超时**：`read_timeout` / `idle_timeout` 为 `<= 0`（含未配置）时取默认 30s / 60s；`write_timeout` 特殊 —— **负值表示不设写超时**（约定写 `-1`），`0` / 未配置仍取默认 30s。之所以不用 `0` 表示关闭：配置的零值就是 `0`，分不清"没配"与"配了 0"，用 `0` 当开关等于顺手拿掉慢客户端的兜底。
-- **长连接与写 deadline**：`net/http` 在读完请求头时一次性设下**绝对**写 deadline，`Flush()` 不会顺延 —— 长连接会准时在 `write_timeout` 那一刻静默断流。SSE handler 内部已自行清掉该 deadline（`http.NewResponseController(w).SetWriteDeadline(time.Time{})`），**因此 SSE 不受 `write_timeout` 限制**；若你也写长连接 handler，记得同样处理。
+- **长连接与写 deadline**：`net/http` 在读完请求头时一次性设下**绝对**写 deadline，`Flush()` 不会顺延 —— 长连接会准时在 `write_timeout` 那一刻静默断流。SSE handler 内部已自行清掉该 deadline（`http.NewResponseController(w).SetWriteDeadline(time.Time{})`），**因此 SSE 不受 `write_timeout` 限制**；若你也写长连接 handler，记得同样处理（**WebSocket 是例外**：升级会劫持连接，`net/http` 在劫持处已把连接 deadline 清零，WS 天然不受它约束，见 websocket 模块 README）。
 
 ## 相关模块
 
