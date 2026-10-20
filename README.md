@@ -356,6 +356,7 @@ server:
   - 注册 `Get`/`Post` 时未 `SetResponseSvc` → panic（原生 handler 不受影响）
   - 依赖未注册 → `Inject` panic
   - 路由重复注册 → gin panic
+  - `Listen` 绑定端口失败（如端口占用）/ `Serve` 异常 → panic；两者都同步执行，错误在调用方协程直接暴露，不再沉进启动子协程
 - **`ContextWithFallback` 是 traceId 生效的前提**：`NewApiSvc` 内部设置了 `app.ContextWithFallback = true`。gin 默认不把 `*gin.Context` 的 `Value/Deadline/Done/Err` 委托给 `Request.Context()`，而 `core/enum/trace` 的 `TraceIdKey` 是定义类型（非 string 别名），两者叠加会让 traceId 在**日志、otel span、MQ 消息头**里全部静默丢失，且 `ctx.Done()` 恒为 nil（取消传播失效）。回归测试见 `service/http/http_svc_test.go` 的 `TestContextValueFallback`。
 - **优雅停机**：`Listen` 收到信号后**先跑 `OnShutdown` 注册的钩子**（如通知 SSE 客户端断开），再以 5s 超时 `srv.Shutdown`。钩子同步串行执行，不要在里面做耗时操作；每个钩子独立 recover，一个 panic 不影响后续钩子与 `Shutdown`；钩子须**幂等**（Go 中函数值不可比较，框架无法去重）。
 - **写超时**：`read_timeout` / `idle_timeout` 为 `<= 0`（含未配置）时取默认 30s / 60s；`write_timeout` 特殊 —— **负值表示不设写超时**（约定写 `-1`），`0` / 未配置仍取默认 30s。之所以不用 `0` 表示关闭：配置的零值就是 `0`，分不清"没配"与"配了 0"，用 `0` 当开关等于顺手拿掉慢客户端的兜底。

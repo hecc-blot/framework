@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -193,32 +194,49 @@ func (f *ApiHandle) Listen() {
 		IdleTimeout:  time.Duration(idleTimeout) * time.Second,
 	}
 
-	// 启动服务
+	// 先同步绑定端口，失败（端口占用、地址非法）直接在调用方协程 panic。
+	// 不用 srv.ListenAndServe 正是因为它把 bind 和 serve 绑在一起、只能整体丢进子协程，错误会被吞掉：
+	// 主协程继续等信号，进程活着但端口不通。
+	ln, err := net.Listen("tcp", srv.Addr)
+	if err != nil {
+		panic(fmt.Sprintf("listen %s: %s", srv.Addr, err))
+	}
+
+	// 接收 SIGINT（Ctrl + C）和 SIGTERM 信号
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(quit)
+
+	// Serve 同步阻塞，信号只能放子协程等。
+	shutdownDone := make(chan struct{})
 	go func() {
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			fmt.Printf("listen: %s\n", err)
+		<-quit
+		fmt.Println("Shutting down server...")
+
+		// 优雅关闭：先执行关闭钩子（如通知 SSE / WS 客户端优雅断开），再关闭 HTTP 服务。
+		// 位置承重 —— srv.Shutdown 只会等活跃连接变 idle，长连接不会自己变 idle；
+		// 先让钩子发关闭帧、取消连接，handler 才能返回，Shutdown 才能迅速收尾。
+		runHooks(f.hooks.all())
+
+		// 创建一个5秒的超时上下文
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		// 等待所有请求完成处理后关闭服务
+		if err := srv.Shutdown(ctx); err != nil {
+			fmt.Printf("Server forced to shutdown: %v\n", err)
 		}
+		close(shutdownDone)
 	}()
 
-	// 等待中断信号来优雅地关闭服务器，为重启做准备
-	quit := make(chan os.Signal, 1)
-	// 接收SIGINT（Ctrl + C）和SIGTERM信号
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
-	fmt.Println("Shutting down server...")
-
-	// 优雅关闭：先执行关闭钩子（如通知 SSE / WS 客户端优雅断开），再关闭 HTTP 服务。
-	// 位置承重 —— srv.Shutdown 只会等活跃连接变 idle，长连接不会自己变 idle；
-	// 先让钩子发关闭帧、取消连接，handler 才能返回，Shutdown 才能迅速收尾。
-	runHooks(f.hooks.all())
-
-	// 创建一个5秒的超时上下文
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	// 等待所有请求完成处理后关闭服务
-	if err := srv.Shutdown(ctx); err != nil {
-		fmt.Printf("Server forced to shutdown: %v\n", err)
+	// 同步 Serve：监听期间的错误直接返回给调用方，不再只 printf 一行。
+	// ErrServerClosed 只在 Shutdown 之后返回，属正常退出。
+	if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		panic(fmt.Sprintf("serve: %s", err))
 	}
+
+	// Shutdown 关掉 listener 后 Serve 立即返回，但此时活跃连接可能尚未清空；
+	// 等它收尾，保持「Listen 返回 = 停机已完成」的语义。
+	<-shutdownDone
 
 	fmt.Println("Server exiting")
 }
