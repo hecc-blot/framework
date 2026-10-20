@@ -26,6 +26,30 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// 停机打印是「进程级事件」，夹在成片的请求日志里很难被发现，上色便于一眼定位：
+// 黄色=正在停机，绿色=已退出，红色=停机超时/失败。只对终端生效，见 terminalColor。
+const (
+	ansiReset  = "\033[0m"
+	ansiRed    = "\033[31m"
+	ansiYellow = "\033[33m"
+	ansiGreen  = "\033[32m"
+)
+
+// terminalColor 给终端输出套颜色；
+// 非终端（管道、重定向到文件、容器日志采集）时原样返回 —— 那些场景下转义码只会变成乱码。
+// 用 os.ModeCharDevice 判断而不再引第三方终端库： 它正是「stdout 是终端」在标准库里的可移植表达。
+// 同时遵守 NO_COLOR 与 TERM=dumb 约定。
+func terminalColor(color, msg string) string {
+	if os.Getenv("NO_COLOR") != "" || os.Getenv("TERM") == "dumb" {
+		return msg
+	}
+	info, err := os.Stdout.Stat()
+	if err != nil || info.Mode()&os.ModeCharDevice == 0 {
+		return msg
+	}
+	return color + msg + ansiReset
+}
+
 type ApiHandle struct {
 	config    *serverConfig.Config
 	engine    *gin.Engine
@@ -211,7 +235,7 @@ func (f *ApiHandle) Listen() {
 	shutdownDone := make(chan struct{})
 	go func() {
 		<-quit
-		fmt.Println("Shutting down server...")
+		fmt.Println(terminalColor(ansiYellow, "Shutting down server..."))
 
 		// 优雅关闭：先执行关闭钩子（如通知 SSE / WS 客户端优雅断开），再关闭 HTTP 服务。
 		// 位置承重 —— srv.Shutdown 只会等活跃连接变 idle，长连接不会自己变 idle；
@@ -223,7 +247,7 @@ func (f *ApiHandle) Listen() {
 		defer cancel()
 		// 等待所有请求完成处理后关闭服务
 		if err := srv.Shutdown(ctx); err != nil {
-			fmt.Printf("Server forced to shutdown: %v\n", err)
+			fmt.Println(terminalColor(ansiRed, fmt.Sprintf("Server forced to shutdown: %v", err)))
 		}
 		close(shutdownDone)
 	}()
@@ -238,7 +262,7 @@ func (f *ApiHandle) Listen() {
 	// 等它收尾，保持「Listen 返回 = 停机已完成」的语义。
 	<-shutdownDone
 
-	fmt.Println("Server exiting")
+	fmt.Println(terminalColor(ansiGreen, "Server exiting"))
 }
 
 func (f *ApiHandle) registerAPI(apiPath string, apiInstance any, method string) {
